@@ -13,6 +13,9 @@
 
 #include <BRep_Builder.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepCheck_Result.hxx>
+#include <BRepCheck_Status.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Circle.hxx>
 #include <Geom_Plane.hxx>
@@ -21,13 +24,14 @@
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
-#include <NCollection_IndexedMap.hxx>
-#include <NCollection_Sequence.hxx>
+#include <NCollection_DataMap.hxx>
+#include <NCollection_LinearVector.hxx>
 #include <Precision.hxx>
 #include <ShapeAnalysis_Edge.hxx>
 #include <ShapeExtend_WireData.hxx>
 #include <ShapeFix_SplitCommonVertex.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -53,27 +57,24 @@ TopoDS_Vertex makeVertex(const double theX, const double theY)
 }
 
 //=================================================================================================
-// Builds a closed polygonal wire through the given vertices (the last one is joined to the first).
 
+// Builds a closed polygonal wire through the given vertices (the last one is joined to the first).
 TopoDS_Wire makeClosedPolygon(std::initializer_list<TopoDS_Vertex> theVertices)
 {
-  NCollection_Sequence<TopoDS_Vertex> aVertices;
-  for (const TopoDS_Vertex& aVertex : theVertices)
-  {
-    aVertices.Append(aVertex);
-  }
+  const TopoDS_Vertex*    aVertices   = theVertices.begin();
+  const size_t            aNbVertices = theVertices.size();
   BRepBuilderAPI_MakeWire aMakeWire;
-  for (int anIndex = 1; anIndex <= aVertices.Length(); ++anIndex)
+  for (size_t anIndex = 0; anIndex < aNbVertices; ++anIndex)
   {
-    const TopoDS_Vertex& aNext = aVertices.Value(anIndex % aVertices.Length() + 1);
-    aMakeWire.Add(BRepBuilderAPI_MakeEdge(aVertices.Value(anIndex), aNext).Edge());
+    const TopoDS_Vertex& aNext = aVertices[(anIndex + 1) % aNbVertices];
+    aMakeWire.Add(BRepBuilderAPI_MakeEdge(aVertices[anIndex], aNext).Edge());
   }
   return aMakeWire.Wire();
 }
 
 //=================================================================================================
-// Builds a face on the XY plane bounded by the given wires, keeping their order.
 
+// Builds a face on the XY plane bounded by the given wires, keeping their order.
 TopoDS_Face makePlanarFace(std::initializer_list<TopoDS_Wire> theWires)
 {
   BRep_Builder aBuilder;
@@ -98,9 +99,9 @@ TopoDS_Face splitCommonVertices(const TopoDS_Face& theFace)
 
 //=================================================================================================
 
-NCollection_Sequence<TopoDS_Wire> faceWires(const TopoDS_Face& theFace)
+NCollection_LinearVector<TopoDS_Wire> faceWires(const TopoDS_Face& theFace)
 {
-  NCollection_Sequence<TopoDS_Wire> aWires;
+  NCollection_LinearVector<TopoDS_Wire> aWires;
   for (TopoDS_Iterator anIter(theFace, false); anIter.More(); anIter.Next())
   {
     if (anIter.Value().ShapeType() == TopAbs_WIRE)
@@ -112,16 +113,16 @@ NCollection_Sequence<TopoDS_Wire> faceWires(const TopoDS_Face& theFace)
 }
 
 //=================================================================================================
-// Checks that in each wire of the face every edge ends at the vertex where the next one starts.
 
+// Checks that in each wire of the face every edge ends at the vertex where the next one starts.
 void expectClosedWires(const TopoDS_Face& theFace)
 {
-  const ShapeAnalysis_Edge                anAnalyzer;
-  const NCollection_Sequence<TopoDS_Wire> aWires = faceWires(theFace);
-  for (int aWireIndex = 1; aWireIndex <= aWires.Length(); ++aWireIndex)
+  const ShapeAnalysis_Edge                    anAnalyzer;
+  const NCollection_LinearVector<TopoDS_Wire> aWires = faceWires(theFace);
+  for (size_t aWireIndex = 0; aWireIndex < aWires.Size(); ++aWireIndex)
   {
     const occ::handle<ShapeExtend_WireData> aWireData =
-      new ShapeExtend_WireData(aWires.Value(aWireIndex));
+      new ShapeExtend_WireData(aWires[aWireIndex]);
     const int aNbEdges = aWireData->NbEdges();
     for (int anEdgeIndex = 1; anEdgeIndex <= aNbEdges; ++anEdgeIndex)
     {
@@ -135,24 +136,46 @@ void expectClosedWires(const TopoDS_Face& theFace)
 }
 
 //=================================================================================================
-// Checks that no vertex of the face belongs to more than one of its wires.
 
+// Checks that no vertex of the face belongs to more than one of its wires.
 void expectNoVertexSharedBetweenWires(const TopoDS_Face& theFace)
 {
-  const NCollection_Sequence<TopoDS_Wire> aWires = faceWires(theFace);
-  for (int aWireIndex1 = 1; aWireIndex1 < aWires.Length(); ++aWireIndex1)
+  NCollection_DataMap<TopoDS_Shape, size_t, TopTools_ShapeMapHasher> aVertexWires;
+  const NCollection_LinearVector<TopoDS_Wire>                        aWires = faceWires(theFace);
+  for (size_t aWireIndex = 0; aWireIndex < aWires.Size(); ++aWireIndex)
   {
-    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aVertices1;
-    TopExp::MapShapes(aWires.Value(aWireIndex1), TopAbs_VERTEX, aVertices1);
-    for (int aWireIndex2 = aWireIndex1 + 1; aWireIndex2 <= aWires.Length(); ++aWireIndex2)
+    for (TopExp_Explorer anExp(aWires[aWireIndex], TopAbs_VERTEX); anExp.More(); anExp.Next())
     {
-      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aVertices2;
-      TopExp::MapShapes(aWires.Value(aWireIndex2), TopAbs_VERTEX, aVertices2);
-      for (int aVertexIndex = 1; aVertexIndex <= aVertices2.Extent(); ++aVertexIndex)
+      if (aVertexWires.TryBind(anExp.Current(), aWireIndex))
       {
-        EXPECT_FALSE(aVertices1.Contains(aVertices2.FindKey(aVertexIndex)))
-          << "wires " << aWireIndex1 << " and " << aWireIndex2 << " share a vertex";
+        continue;
       }
+      const size_t anOtherWireIndex = aVertexWires.Find(anExp.Current());
+      EXPECT_EQ(anOtherWireIndex, aWireIndex)
+        << "wires " << anOtherWireIndex << " and " << aWireIndex << " share a vertex";
+    }
+  }
+}
+
+//=================================================================================================
+
+// Checks each wire of the face with the topology validity checker.
+// The face itself is not checked: its wires touch each other at a point by construction,
+// which BRepCheck reports as intersecting wires.
+void expectValidWires(const TopoDS_Face& theFace)
+{
+  const BRepCheck_Analyzer anAnalyzer(theFace);
+  for (TopExp_Explorer anExp(theFace, TopAbs_WIRE); anExp.More(); anExp.Next())
+  {
+    const occ::handle<BRepCheck_Result>& aResult = anAnalyzer.Result(anExp.Current());
+    ASSERT_FALSE(aResult.IsNull());
+    for (const BRepCheck_Status& aStatus : aResult->Status())
+    {
+      EXPECT_EQ(aStatus, BRepCheck_NoError);
+    }
+    for (const BRepCheck_Status& aStatus : aResult->StatusOnShape(theFace))
+    {
+      EXPECT_EQ(aStatus, BRepCheck_NoError);
     }
   }
 }
@@ -191,6 +214,7 @@ TEST(ShapeFix_SplitCommonVertexTest, Perform_TwoWiresShareVertex_SplitsVertex)
   const TopoDS_Face aResult = splitCommonVertices(aFace);
   expectClosedWires(aResult);
   expectNoVertexSharedBetweenWires(aResult);
+  expectValidWires(aResult);
 }
 
 //=================================================================================================
@@ -212,6 +236,7 @@ TEST(ShapeFix_SplitCommonVertexTest, Perform_EdgeEndsSharedWithTwoWires_KeepsWir
   const TopoDS_Face aResult = splitCommonVertices(aFace);
   expectClosedWires(aResult);
   expectNoVertexSharedBetweenWires(aResult);
+  expectValidWires(aResult);
 }
 
 //=================================================================================================
@@ -230,6 +255,7 @@ TEST(ShapeFix_SplitCommonVertexTest, Perform_EdgeEndsSharedWithOneWire_KeepsWire
   const TopoDS_Face aResult = splitCommonVertices(aFace);
   expectClosedWires(aResult);
   expectNoVertexSharedBetweenWires(aResult);
+  expectValidWires(aResult);
 }
 
 //=================================================================================================
@@ -251,6 +277,7 @@ TEST(ShapeFix_SplitCommonVertexTest, Perform_VertexSharedByThreeWires_SplitsVert
   const TopoDS_Face aResult = splitCommonVertices(aFace);
   expectClosedWires(aResult);
   expectNoVertexSharedBetweenWires(aResult);
+  expectValidWires(aResult);
 }
 
 //=================================================================================================
@@ -276,11 +303,12 @@ TEST(ShapeFix_SplitCommonVertexTest, Perform_ClosedEdgeTouchesOtherWire_KeepsEdg
   const TopoDS_Face aResult = splitCommonVertices(aFace);
   expectClosedWires(aResult);
   expectNoVertexSharedBetweenWires(aResult);
+  expectValidWires(aResult);
 
   // wire order is preserved, so the second wire is the circle
-  const NCollection_Sequence<TopoDS_Wire> aWires = faceWires(aResult);
-  ASSERT_EQ(aWires.Length(), 2);
-  const TopoDS_Edge aResultCircleEdge = TopoDS::Edge(TopoDS_Iterator(aWires.Value(2)).Value());
+  const NCollection_LinearVector<TopoDS_Wire> aWires = faceWires(aResult);
+  ASSERT_EQ(aWires.Size(), 2u);
+  const TopoDS_Edge aResultCircleEdge = TopoDS::Edge(TopoDS_Iterator(aWires[1]).Value());
   TopoDS_Vertex     aFirstVertex, aLastVertex;
   TopExp::Vertices(aResultCircleEdge, aFirstVertex, aLastVertex);
   EXPECT_TRUE(aFirstVertex.IsSame(aLastVertex));
