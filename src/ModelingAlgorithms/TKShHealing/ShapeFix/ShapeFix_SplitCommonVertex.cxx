@@ -88,8 +88,7 @@ void ShapeFix_SplitCommonVertex::Perform()
     {
       continue;
     }
-    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> MapVV;
-    MapVV.Clear();
+    bool hasCommonVertex = false;
     for (int nw1 = 1; nw1 < wires.Length(); nw1++)
     {
       TopoDS_Wire                       w1    = TopoDS::Wire(wires.Value(nw1));
@@ -98,6 +97,9 @@ void ShapeFix_SplitCommonVertex::Perform()
       {
         TopoDS_Wire                       w2    = TopoDS::Wire(wires.Value(nw2));
         occ::handle<ShapeExtend_WireData> sewd2 = new ShapeExtend_WireData(w2);
+        // new vertices are created per pair of wires, so that a vertex shared by several
+        // wires is replaced by a distinct vertex in each of them
+        NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> MapVV;
 
         for (TopExp_Explorer expv1(w1, TopAbs_VERTEX); expv1.More(); expv1.Next())
         {
@@ -125,7 +127,14 @@ void ShapeFix_SplitCommonVertex::Perform()
               ShapeAnalysis_Edge sae;
               for (int ne2 = 1; ne2 <= sewd2->NbEdges(); ne2++)
               {
-                TopoDS_Edge   E       = sewd2->Edge(ne2);
+                // take the edge with all replacements recorded so far: the same edge may be
+                // modified several times (e.g. for each of its ends), and each modification
+                // must keep the previous ones
+                TopoDS_Edge E = TopoDS::Edge(Context()->Apply(sewd2->Edge(ne2)));
+                if (E.IsNull())
+                {
+                  continue;
+                }
                 TopoDS_Vertex FV      = sae.FirstVertex(E);
                 TopoDS_Vertex LV      = sae.LastVertex(E);
                 bool          IsCoinc = false;
@@ -148,9 +157,10 @@ void ShapeFix_SplitCommonVertex::Perform()
             }
           }
         }
+        hasCommonVertex = hasCommonVertex || !MapVV.IsEmpty();
       }
     }
-    if (!MapVV.IsEmpty())
+    if (hasCommonVertex)
     {
       SendWarning(Message_Msg("Fix.SplitCommonVertex.MSG0"));
     }
